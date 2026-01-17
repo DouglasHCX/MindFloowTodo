@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">MindFlowTodo</string>
+    <string name="widget_description">显示今日待办任务概览</string>
+</resources>
