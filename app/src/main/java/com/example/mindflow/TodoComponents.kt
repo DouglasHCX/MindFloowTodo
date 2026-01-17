@@ -17,6 +17,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -30,10 +33,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset // ★★★ 修复点：添加了这个关键 Import ★★★
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -102,7 +108,6 @@ fun SimpleAudioPlayer(audioPath: String) {
                 try {
                     mediaPlayer.reset()
                     mediaPlayer.setDataSource(audioPath)
-                    // ★★★ 修复点：将参数名命名为 mp，以匹配下方的 mp.start() ★★★
                     mediaPlayer.setOnPreparedListener { mp ->
                         mp.start()
                         isPlaying = true
@@ -160,7 +165,6 @@ fun TodoCard(todo: TodoItem, onEvent: (TodoEvent) -> Unit, onLongClick: (TodoIte
                     if (todo.isFromInspiration) { Spacer(modifier = Modifier.width(6.dp)); Icon(Icons.Outlined.Lightbulb, contentDescription = "From Inspiration", tint = Color.Yellow.copy(alpha = 0.9f), modifier = Modifier.size(16.dp)) }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 图片图标
                     if (todo.imageUris.isNotEmpty()) {
                         Icon(imageVector = if (todo.imageUris.size > 1) Icons.Outlined.PhotoLibrary else Icons.Outlined.Image, contentDescription = "Images", tint = Color.White, modifier = Modifier.size(16.dp))
                         if (todo.imageUris.size > 1) { Spacer(modifier = Modifier.width(2.dp)); Text(text = "${todo.imageUris.size}", style = MaterialTheme.typography.labelSmall, color = Color.White) }
@@ -281,8 +285,8 @@ fun SwipeToActionContainer(todo: TodoItem, onDelete: () -> Unit, onCamera: () ->
 fun PhotoSessionDialog(
     todo: TodoItem,
     onDismiss: () -> Unit,
-    onAddPhoto: () -> Unit, // 保持原有的拍照回调（建议改名为 onCameraClick 但为了兼容暂不改）
-    onGalleryClick: () -> Unit, // ★★★ 新增：相册回调
+    onAddPhoto: () -> Unit,
+    onGalleryClick: () -> Unit,
     onDeletePhoto: (String) -> Unit,
     onImageClick: (String) -> Unit
 ) {
@@ -293,7 +297,7 @@ fun PhotoSessionDialog(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
         ) {
             Column {
-                // 顶部：图片展示区 (保持不变)
+                // 顶部：图片展示区
                 Box(modifier = Modifier.fillMaxWidth().height(300.dp).background(Color.Black)) {
                     if (todo.imageUris.isNotEmpty()) {
                         val pagerState = rememberPagerState(pageCount = { todo.imageUris.size })
@@ -334,7 +338,6 @@ fun PhotoSessionDialog(
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("包含 ${todo.imageUris.size} 张照片", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
 
-                    // 音频播放器 (保持不变)
                     if (todo.audioPath != null) {
                         Spacer(modifier = Modifier.height(16.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
@@ -350,7 +353,6 @@ fun PhotoSessionDialog(
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // ★★★ 修改：底部按钮区域，增加相册按钮 ★★★
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -359,14 +361,11 @@ fun PhotoSessionDialog(
                         TextButton(onClick = onDismiss) { Text("关闭") }
 
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            // 相册按钮
                             OutlinedButton(onClick = onGalleryClick) {
                                 Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(18.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("相册")
                             }
-
-                            // 拍照按钮
                             Button(
                                 onClick = onAddPhoto,
                                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
@@ -384,12 +383,86 @@ fun PhotoSessionDialog(
     }
 }
 
+// ★★★ 优化后的全屏图片查看器 (支持双指缩放 + 拖拽 + 双击) ★★★
 @Composable
 fun FullScreenImageDialog(imageUri: String, onDismiss: () -> Unit) {
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-        Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            AsyncImage(model = imageUri, contentDescription = "Full Screen", modifier = Modifier.fillMaxSize().clickable { onDismiss() }, contentScale = ContentScale.Fit)
-            IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp).background(Color.Black.copy(0.5f), CircleShape)) { Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = Color.White) }
+    // 1. 定义缩放和位移的状态
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+
+    // 2. 定义手势处理器 (处理平移和缩放)
+    val state = rememberTransformableState { zoomChange, offsetChange, _ ->
+        scale = (scale * zoomChange).coerceIn(1f, 4f)
+        if (scale > 1f) {
+            offset += offsetChange
+        } else {
+            offset = Offset.Zero
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                // 3. 处理点击和双击事件
+                // 注意：这里使用 pointerInput 是为了不与 transformable 冲突
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { onDismiss() },
+                        onDoubleTap = {
+                            if (scale > 1f) {
+                                scale = 1f
+                                offset = Offset.Zero
+                            } else {
+                                scale = 2.5f
+                            }
+                        }
+                    )
+                }
+        ) {
+            // 图片容器，应用 transformable
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .transformable(state = state)
+            ) {
+                AsyncImage(
+                    model = imageUri,
+                    contentDescription = "Full Screen",
+                    modifier = Modifier
+                        .fillMaxSize()
+                        // 4. 应用缩放和位移变换
+                        .graphicsLayer(
+                            scaleX = scale,
+                            scaleY = scale,
+                            translationX = offset.x,
+                            translationY = offset.y
+                        ),
+                    contentScale = ContentScale.Fit
+                )
+            }
+
+            // 关闭按钮
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = 48.dp, end = 16.dp).background(Color.Black.copy(0.5f), CircleShape)
+            ) {
+                Icon(imageVector = Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+            }
+
+            // 操作提示
+            if (scale == 1f) {
+                Text(
+                    text = "双击放大 / 双指缩放",
+                    color = Color.White.copy(alpha = 0.6f),
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)
+                )
+            }
         }
     }
 }
@@ -520,8 +593,6 @@ fun AddTodoDialog(
                                     stopRecording()
                                 } else {
                                     recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                                    // 注意：这里需要用户授权后再次点击才能开始录音，或者做更复杂的权限回调处理。
-                                    // 为防止崩溃，startRecording 内部加了 try-catch
                                     startRecording()
                                 }
                             },

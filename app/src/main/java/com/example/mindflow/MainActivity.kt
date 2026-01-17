@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.scale
@@ -115,12 +116,17 @@ fun MainScreen(viewModel: TodoViewModel) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
 
-    var sessionTodoId by remember { mutableStateOf<Int?>(null) }
+    // ★★★ 修复1：使用 rememberSaveable 防止从相机返回时 ID 丢失 ★★★
+    var sessionTodoId by rememberSaveable { mutableStateOf<Int?>(null) }
+
     // 确保 activeSessionTodo 能够实时获取最新的 todo 状态（包括刚添加的图片）
     val activeSessionTodo = remember(sessionTodoId, state.todos) { state.todos.find { it.id == sessionTodoId } }
 
     var fullScreenImageUri by remember { mutableStateOf<String?>(null) }
-    var tempImageUri by remember { mutableStateOf<Uri?>(null) }
+
+    // ★★★ 修复2：使用 String 存储并配合 rememberSaveable，防止拍照 URI 丢失 ★★★
+    var tempImageUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    val tempImageUri = remember(tempImageUriString) { tempImageUriString?.let { Uri.parse(it) } }
 
     val currentToast = remember { mutableStateOf<Toast?>(null) }
 
@@ -158,7 +164,7 @@ fun MainScreen(viewModel: TodoViewModel) {
         return FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
     }
 
-    // ★★★ 1. 修复：添加 galleryLauncher 定义 ★★★
+    // 1. 相册选择器 (包含压缩)
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null && activeSessionTodo != null) {
             scope.launch {
@@ -174,17 +180,17 @@ fun MainScreen(viewModel: TodoViewModel) {
         }
     }
 
-    // ★★★ 2. 修复：相机拍照后也进行压缩 ★★★
+    // 2. 相机拍照 (包含压缩)
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success && activeSessionTodo != null && tempImageUri != null) {
             scope.launch {
-                // 1. 尝试压缩拍摄的图片
-                val compressedPath = ImageUtils.compressAndSaveImage(context, tempImageUri!!)
+                // 尝试压缩拍摄的图片
+                val compressedPath = ImageUtils.compressAndSaveImage(context, tempImageUri)
 
                 if (compressedPath != null) {
-                    // 2. 如果压缩成功，删除原始的大图以节省空间
+                    // 如果压缩成功，删除原始的大图以节省空间
                     try {
-                        val pathSegments = tempImageUri!!.pathSegments
+                        val pathSegments = tempImageUri.pathSegments
                         val filename = pathSegments.last()
                         val originalFile = File(File(context.filesDir, "images"), filename)
                         if (originalFile.exists()) {
@@ -194,11 +200,11 @@ fun MainScreen(viewModel: TodoViewModel) {
                         e.printStackTrace()
                     }
 
-                    // 3. 保存压缩后的图片路径
+                    // 保存压缩后的图片路径
                     viewModel.onEvent(TodoEvent.UpdateTodoImage(activeSessionTodo!!, compressedPath))
                     Toast.makeText(context, "照片已保存 (已压缩) 📸", Toast.LENGTH_SHORT).show()
                 } else {
-                    // 4. 如果压缩失败，则回退使用原始图片
+                    // 如果压缩失败，则回退使用原始图片
                     viewModel.onEvent(TodoEvent.UpdateTodoImage(activeSessionTodo!!, tempImageUri.toString()))
                     Toast.makeText(context, "照片已保存 📸", Toast.LENGTH_SHORT).show()
                 }
@@ -277,11 +283,15 @@ fun MainScreen(viewModel: TodoViewModel) {
         }
 
         if (activeSessionTodo != null) {
-            // ★★★ 3. 使用 PhotoSessionDialog 并传入 galleryLauncher ★★★
             PhotoSessionDialog(
                 todo = activeSessionTodo!!,
                 onDismiss = { sessionTodoId = null },
-                onAddPhoto = { tempImageUri = createImageUri(); cameraLauncher.launch(tempImageUri!!) },
+                onAddPhoto = {
+                    // ★★★ 3. 创建 URI 并保存到 String 状态中 ★★★
+                    val uri = createImageUri()
+                    tempImageUriString = uri.toString()
+                    cameraLauncher.launch(uri)
+                },
                 onGalleryClick = {
                     // 启动系统照片选择器 (仅显示图片)
                     galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))

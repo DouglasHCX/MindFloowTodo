@@ -40,6 +40,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
@@ -239,23 +241,185 @@ fun WeekSelectionDialog(currentStartDate: LocalDate, todos: List<TodoItem>, onDi
     }
 }
 
+// ★★★ 优化后的周报分析界面 (修复了类名错误: WeeklyReport -> WeeklyReportData) ★★★
 @Composable
 fun WeeklyReportScreen(state: TodoState, onEvent: (TodoEvent) -> Unit) {
-    LaunchedEffect(Unit) { onEvent(TodoEvent.GenerateWeeklyReport) }
+    // 1. 定义本地状态，使用正确的类名 WeeklyReportData
+    var localReport by remember { mutableStateOf<WeeklyReportData?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    // 2. 核心优化：使用 LaunchedEffect 将计算移至后台线程
+    // 当 reportStartDate 或 todos 发生变化时，重新计算
+    LaunchedEffect(state.reportStartDate, state.todos) {
+        isLoading = true
+        // 切换到 Default 线程（适合 CPU 密集型计算）
+        val result = withContext(Dispatchers.Default) {
+            val startDate = state.reportStartDate
+            val endDate = startDate.plusDays(6)
+            // 执行耗时分析
+            WeeklyAnalysisEngine.analyze(state.todos, startDate, endDate)
+        }
+        // 计算完成后，切回主线程更新 UI
+        localReport = result
+        isLoading = false
+    }
+
     var selectedKeyword by remember { mutableStateOf<KeywordItem?>(null) }
     var showWeekDialog by remember { mutableStateOf(false) }
-    if (selectedKeyword != null) { KeywordDialog(keyword = selectedKeyword!!, onDismiss = { selectedKeyword = null }) }
-    if (showWeekDialog) { WeekSelectionDialog(currentStartDate = state.reportStartDate, todos = state.todos, onDismiss = { showWeekDialog = false }, onWeekSelected = { date -> onEvent(TodoEvent.SetReportWeek(date)) }) }
+
+    if (selectedKeyword != null) {
+        KeywordDialog(keyword = selectedKeyword!!, onDismiss = { selectedKeyword = null })
+    }
+
+    // 周选择弹窗逻辑保持不变
+    if (showWeekDialog) {
+        WeekSelectionDialog(
+            currentStartDate = state.reportStartDate,
+            todos = state.todos,
+            onDismiss = { showWeekDialog = false },
+            onWeekSelected = { date -> onEvent(TodoEvent.SetReportWeek(date)) }
+        )
+    }
+
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        val weekFields = WeekFields.of(Locale.CHINA); val weekNumber = state.reportStartDate.get(weekFields.weekOfWeekBasedYear()); val year = state.reportStartDate.year; val dateRangeText = "${state.reportStartDate.format(DateTimeFormatter.ofPattern("MM.dd"))} - ${state.reportStartDate.plusDays(6).format(DateTimeFormatter.ofPattern("MM.dd"))}"
-        Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) { IconButton(onClick = { onEvent(TodoEvent.NavigateStatsSubScreen(StatsSubScreen.MENU)) }) { Icon(Icons.Default.ArrowBack, "Back") }; Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(50)).clip(RoundedCornerShape(50)).clickable { showWeekDialog = true }.padding(4.dp)) { IconButton(onClick = { onEvent(TodoEvent.ChangeReportWeek(-1)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ChevronLeft, null, modifier = Modifier.size(20.dp)) }; Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) { Text("${year}年 第${weekNumber}周 ($dateRangeText)", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold); Spacer(modifier = Modifier.width(4.dp)); Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant) }; IconButton(onClick = { onEvent(TodoEvent.ChangeReportWeek(1)) }, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(20.dp)) } }; Spacer(modifier = Modifier.width(48.dp)) }
-        val report = state.weeklyReport
-        if (report == null) { Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() } } else {
-            LazyColumn(contentPadding = PaddingValues(16.dp)) {
-                item { Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary), shape = RoundedCornerShape(24.dp)) { Column(modifier = Modifier.padding(24.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) { Text("本周称号", style = MaterialTheme.typography.labelLarge, color = Color.White.copy(0.8f)); Spacer(modifier = Modifier.height(8.dp)); Text(report.title, style = MaterialTheme.typography.displayMedium, fontWeight = FontWeight.Bold, color = Color.White); Spacer(modifier = Modifier.height(16.dp)); Text("总分: ${report.score.totalScore}", style = MaterialTheme.typography.titleLarge, color = Color.White, fontWeight = FontWeight.Bold) } }; Spacer(modifier = Modifier.height(24.dp)) }
-                item { Text("五维能力模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Spacer(modifier = Modifier.height(16.dp)); Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) { RadarChart(scores = listOf(report.score.execution / 100f, report.score.focus / 100f, report.score.balance / 100f, report.score.resilience / 100f, report.score.activity / 100f), labels = listOf("执行", "专注", "平衡", "攻坚", "活跃")) }; Spacer(modifier = Modifier.height(24.dp)) }
-                item { Text("本周关键词 (点击查看)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Spacer(modifier = Modifier.height(8.dp)); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { report.keywords.forEach { keyword -> SuggestionChip(onClick = { selectedKeyword = keyword }, label = { Text(keyword.tag) }) } }; Spacer(modifier = Modifier.height(24.dp)) }
-                item { Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) { Column(modifier = Modifier.padding(16.dp)) { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Lightbulb, null, tint = MaterialTheme.colorScheme.primary); Spacer(modifier = Modifier.width(8.dp)); Text("智能总结", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold) }; Spacer(modifier = Modifier.height(8.dp)); Text(report.summary, style = MaterialTheme.typography.bodyMedium, lineHeight = 24.sp) } }; Spacer(modifier = Modifier.height(48.dp)) }
+        val weekFields = java.time.temporal.WeekFields.of(java.util.Locale.CHINA)
+        val weekNumber = state.reportStartDate.get(weekFields.weekOfWeekBasedYear())
+        val year = state.reportStartDate.year
+        val dateRangeText = "${state.reportStartDate.format(java.time.format.DateTimeFormatter.ofPattern("MM.dd"))} - ${state.reportStartDate.plusDays(6).format(java.time.format.DateTimeFormatter.ofPattern("MM.dd"))}"
+
+        // 顶部导航栏
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            IconButton(onClick = { onEvent(TodoEvent.NavigateStatsSubScreen(StatsSubScreen.MENU)) }) {
+                Icon(Icons.Default.ArrowBack, "Back")
+            }
+
+            // 周切换器
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(50))
+                    .clip(RoundedCornerShape(50))
+                    .clickable { showWeekDialog = true }
+                    .padding(4.dp)
+            ) {
+                IconButton(onClick = { onEvent(TodoEvent.ChangeReportWeek(-1)) }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.ChevronLeft, null, modifier = Modifier.size(20.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
+                    Text(
+                        "${year}年 第${weekNumber}周 ($dateRangeText)",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                IconButton(onClick = { onEvent(TodoEvent.ChangeReportWeek(1)) }, modifier = Modifier.size(32.dp)) {
+                    Icon(Icons.Default.ChevronRight, null, modifier = Modifier.size(20.dp))
+                }
+            }
+            Spacer(modifier = Modifier.width(48.dp)) // 占位，保持中间居中
+        }
+
+        // 内容区域
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (isLoading) {
+                // 加载中状态
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else if (localReport == null) {
+                // 错误或空状态
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("无法生成报表", color = Color.Gray)
+                }
+            } else {
+                // 显示报表内容
+                // 使用 !! 是安全的，因为我们已经检查了 localReport == null
+                val report = localReport!!
+
+                LazyColumn(contentPadding = PaddingValues(16.dp)) {
+                    item {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary),
+                            shape = RoundedCornerShape(24.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(24.dp).fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Text("本周称号", style = MaterialTheme.typography.labelLarge, color = Color.White.copy(0.8f))
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    report.title,
+                                    style = MaterialTheme.typography.displayMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    "总分: ${report.score.totalScore}",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+
+                    item {
+                        Text("五维能力模型", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Box(modifier = Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
+                            RadarChart(
+                                scores = listOf(
+                                    report.score.execution / 100f,
+                                    report.score.focus / 100f,
+                                    report.score.balance / 100f,
+                                    report.score.resilience / 100f,
+                                    report.score.activity / 100f
+                                ),
+                                labels = listOf("执行", "专注", "平衡", "攻坚", "活跃")
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+
+                    item {
+                        Text("本周关键词 (点击查看)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            report.keywords.forEach { keyword ->
+                                SuggestionChip(
+                                    onClick = { selectedKeyword = keyword },
+                                    label = { Text(keyword.tag) }
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+
+                    item {
+                        Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Outlined.Lightbulb, null, tint = MaterialTheme.colorScheme.primary)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("智能总结", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(report.summary, style = MaterialTheme.typography.bodyMedium, lineHeight = 24.sp)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(48.dp))
+                    }
+                }
             }
         }
     }
