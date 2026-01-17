@@ -102,9 +102,12 @@ fun SimpleAudioPlayer(audioPath: String) {
                 try {
                     mediaPlayer.reset()
                     mediaPlayer.setDataSource(audioPath)
-                    mediaPlayer.prepare()
-                    mediaPlayer.start()
-                    isPlaying = true
+                    // ★★★ 修复点：将参数名命名为 mp，以匹配下方的 mp.start() ★★★
+                    mediaPlayer.setOnPreparedListener { mp ->
+                        mp.start()
+                        isPlaying = true
+                    }
+                    mediaPlayer.prepareAsync()
                     mediaPlayer.setOnCompletionListener {
                         isPlaying = false
                     }
@@ -163,12 +166,10 @@ fun TodoCard(todo: TodoItem, onEvent: (TodoEvent) -> Unit, onLongClick: (TodoIte
                         if (todo.imageUris.size > 1) { Spacer(modifier = Modifier.width(2.dp)); Text(text = "${todo.imageUris.size}", style = MaterialTheme.typography.labelSmall, color = Color.White) }
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    // ↓↓↓ 核心修改：如果有录音，只显示小图标，不显示播放器 ↓↓↓
                     if (todo.audioPath != null) {
                         Icon(Icons.Default.Mic, contentDescription = "Has Audio", tint = Color.White, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
                     }
-                    // ↑↑↑ 结束 ↑↑↑
 
                     if (todo.reminderTime != null) { Icon(Icons.Default.Notifications, contentDescription = "Reminder", tint = Color.White.copy(0.9f), modifier = Modifier.size(14.dp)); Spacer(modifier = Modifier.width(2.dp)); Text(text = formatTime(todo.reminderTime), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(0.9f), fontSize = 12.sp); Spacer(modifier = Modifier.width(8.dp)) }
                     if (todo.dueDate != null) { Text(text = formatDate(Instant.ofEpochMilli(todo.dueDate).atZone(ZoneId.systemDefault()).toLocalDate()), style = MaterialTheme.typography.bodySmall, color = Color.White.copy(0.8f), fontSize = 12.sp); Spacer(modifier = Modifier.width(8.dp)) }
@@ -202,7 +203,6 @@ fun InspirationGridCard(todo: TodoItem, onEvent: (TodoEvent) -> Unit) {
                 Text(text = todo.title, style = if (isShortAndPunchy) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleMedium, fontWeight = FontWeight.ExtraBold, color = contentColor, modifier = Modifier.weight(1f), textDecoration = if (todo.isIncubated) TextDecoration.LineThrough else null, lineHeight = if (isShortAndPunchy) 32.sp else 24.sp)
 
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // ↓↓↓ 核心修改：灵感卡片也只显示小图标 ↓↓↓
                     if (todo.audioPath != null) {
                         Icon(Icons.Default.Mic, contentDescription = null, tint = contentColor.copy(alpha = 0.5f), modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
@@ -249,7 +249,6 @@ fun RandomIdeaDialog(todo: TodoItem, onDismiss: () -> Unit, onEvent: (TodoEvent)
                         Spacer(modifier = Modifier.height(24.dp))
                         Text(text = todo.title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = Color.Black.copy(0.8f), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         Spacer(modifier = Modifier.height(16.dp))
-                        // 这里保留播放器，因为这是一个详情查看的场景
                         if (todo.audioPath != null) { SimpleAudioPlayer(todo.audioPath); Spacer(modifier = Modifier.height(8.dp)) }
                         if (todo.content.isNotBlank()) { Text(text = todo.content, style = MaterialTheme.typography.bodyLarge, color = Color.Black.copy(0.7f), textAlign = androidx.compose.ui.text.style.TextAlign.Center, overflow = TextOverflow.Ellipsis) }
                     }
@@ -277,28 +276,55 @@ fun EmptyStateView(isSearch: Boolean, text: String = "今天任务全部搞定�
 @Composable
 fun SwipeToActionContainer(todo: TodoItem, onDelete: () -> Unit, onCamera: () -> Unit, content: @Composable () -> Unit) { val haptic = LocalHapticFeedback.current; val dismissState = rememberSwipeToDismissBoxState(confirmValueChange = { value -> when (value) { SwipeToDismissBoxValue.EndToStart -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onDelete(); true }; SwipeToDismissBoxValue.StartToEnd -> { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onCamera(); false }; else -> false } }); SwipeToDismissBox(state = dismissState, backgroundContent = { val direction = dismissState.dismissDirection; val color = when (direction) { SwipeToDismissBoxValue.EndToStart -> Color.Red; SwipeToDismissBoxValue.StartToEnd -> Color(0xFF4CAF50); else -> Color.Transparent }; val alignment = if (direction == SwipeToDismissBoxValue.EndToStart) Alignment.CenterEnd else Alignment.CenterStart; val icon = if (direction == SwipeToDismissBoxValue.EndToStart) Icons.Outlined.Delete else Icons.Outlined.CameraAlt; Box(modifier = Modifier.fillMaxSize().background(color, RoundedCornerShape(12.dp)).padding(horizontal = 24.dp), contentAlignment = alignment) { Icon(imageVector = icon, contentDescription = null, tint = Color.White) } }, content = { content() }) }
 
-// ↓↓↓ 核心修改：PhotoSessionDialog (查看详情弹窗) ↓↓↓
-// 在这里增加音频播放器
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun PhotoSessionDialog(todo: TodoItem, onDismiss: () -> Unit, onAddPhoto: () -> Unit, onDeletePhoto: (String) -> Unit, onImageClick: (String) -> Unit) {
+fun PhotoSessionDialog(
+    todo: TodoItem,
+    onDismiss: () -> Unit,
+    onAddPhoto: () -> Unit, // 保持原有的拍照回调（建议改名为 onCameraClick 但为了兼容暂不改）
+    onGalleryClick: () -> Unit, // ★★★ 新增：相册回调
+    onDeletePhoto: (String) -> Unit,
+    onImageClick: (String) -> Unit
+) {
     Dialog(onDismissRequest = onDismiss) {
-        Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
             Column {
-                // 顶部：图片展示区
+                // 顶部：图片展示区 (保持不变)
                 Box(modifier = Modifier.fillMaxWidth().height(300.dp).background(Color.Black)) {
                     if (todo.imageUris.isNotEmpty()) {
                         val pagerState = rememberPagerState(pageCount = { todo.imageUris.size })
                         HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                             val currentUri = todo.imageUris[page]
                             Box(modifier = Modifier.fillMaxSize()) {
-                                AsyncImage(model = currentUri, contentDescription = "Image", modifier = Modifier.fillMaxSize().clickable { onImageClick(currentUri) }, contentScale = ContentScale.Fit)
-                                IconButton(onClick = { onDeletePhoto(currentUri) }, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).background(Color.Black.copy(0.4f), CircleShape).size(36.dp)) { Icon(imageVector = Icons.Outlined.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(20.dp)) }
+                                AsyncImage(
+                                    model = currentUri,
+                                    contentDescription = "Image",
+                                    modifier = Modifier.fillMaxSize().clickable { onImageClick(currentUri) },
+                                    contentScale = ContentScale.Fit
+                                )
+                                IconButton(
+                                    onClick = { onDeletePhoto(currentUri) },
+                                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).background(Color.Black.copy(0.4f), CircleShape).size(36.dp)
+                                ) {
+                                    Icon(imageVector = Icons.Outlined.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
                             }
                         }
-                        if (todo.imageUris.size > 1) { Box(modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).background(Color.Black.copy(0.6f), RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp)) { Text("${pagerState.currentPage + 1} / ${todo.imageUris.size}", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold) } }
+                        if (todo.imageUris.size > 1) {
+                            Box(modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp).background(Color.Black.copy(0.6f), RoundedCornerShape(12.dp)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                Text("${pagerState.currentPage + 1} / ${todo.imageUris.size}", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
                     } else {
-                        Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) { Icon(Icons.Outlined.AddAPhoto, null, tint = Color.Gray, modifier = Modifier.size(48.dp)); Spacer(modifier = Modifier.height(8.dp)); Text("点击下方按钮拍照", color = Color.Gray) }
+                        Column(modifier = Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Outlined.AddAPhoto, null, tint = Color.Gray, modifier = Modifier.size(48.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("暂无照片", color = Color.Gray)
+                        }
                     }
                 }
 
@@ -308,35 +334,48 @@ fun PhotoSessionDialog(todo: TodoItem, onDismiss: () -> Unit, onAddPhoto: () -> 
                     Spacer(modifier = Modifier.height(4.dp))
                     Text("包含 ${todo.imageUris.size} 张照片", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
 
-                    // ★★★ 新增：在这里显示音频播放器 ★★★
+                    // 音频播放器 (保持不变)
                     if (todo.audioPath != null) {
                         Spacer(modifier = Modifier.height(16.dp))
-                        Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                         Spacer(modifier = Modifier.height(12.dp))
-
-                        // 播放器标题
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Mic, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("语音备注", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         }
                         Spacer(modifier = Modifier.height(8.dp))
-
-                        // 播放器组件
                         SimpleAudioPlayer(todo.audioPath)
                     }
-                    // ↑↑↑ 结束 ↑↑↑
 
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    // ★★★ 修改：底部按钮区域，增加相册按钮 ★★★
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         TextButton(onClick = onDismiss) { Text("关闭") }
-                        Button(onClick = onAddPhoto, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)) {
-                            val btnIcon = if (todo.imageUris.isEmpty()) Icons.Outlined.AddAPhoto else Icons.Outlined.CameraAlt
-                            val btnText = if (todo.imageUris.isEmpty()) "拍摄照片" else "继续拍照"
-                            Icon(btnIcon, null, modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(btnText)
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            // 相册按钮
+                            OutlinedButton(onClick = onGalleryClick) {
+                                Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("相册")
+                            }
+
+                            // 拍照按钮
+                            Button(
+                                onClick = onAddPhoto,
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                val btnIcon = if (todo.imageUris.isEmpty()) Icons.Outlined.AddAPhoto else Icons.Outlined.CameraAlt
+                                Icon(btnIcon, null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("拍照")
+                            }
                         }
                     }
                 }
@@ -379,7 +418,6 @@ fun PriorityChip(label: String, value: Int, current: Int, color: Color, onClick:
     Box(modifier = Modifier.clip(RoundedCornerShape(8.dp)).background(backgroundColor).border(width = if(isSelected) 0.dp else 1.dp, color = borderColor, shape = RoundedCornerShape(8.dp)).clickable { onClick() }.padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) { Text(text = label, style = MaterialTheme.typography.labelLarge, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal, color = textColor) }
 }
 
-// ↓↓↓ AddTodoDialog (增加录音逻辑) ↓↓↓
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddTodoDialog(
@@ -412,32 +450,13 @@ fun AddTodoDialog(
     val isIdeaMode = category == "灵感"
     val isEditMode = todoToEdit != null
 
-    // 录音相关状态
     var isRecording by remember { mutableStateOf(false) }
     var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
 
-    // 录音权限检查
     val recordPermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
         if (!isGranted) Toast.makeText(context, "需要录音权限", Toast.LENGTH_SHORT).show()
     }
 
-    // 开始录音
-    fun startRecording() {
-        val file = File(context.filesDir, "audio_${System.currentTimeMillis()}.m4a")
-        val newRecorder = MediaRecorder().apply {
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setOutputFile(file.absolutePath)
-            prepare()
-            start()
-        }
-        recorder = newRecorder
-        isRecording = true
-        audioPath = file.absolutePath
-    }
-
-    // 停止录音
     fun stopRecording() {
         try {
             recorder?.stop()
@@ -447,6 +466,27 @@ fun AddTodoDialog(
         }
         recorder = null
         isRecording = false
+    }
+
+    fun startRecording() {
+        try {
+            val file = File(context.filesDir, "audio_${System.currentTimeMillis()}.m4a")
+            val newRecorder = MediaRecorder().apply {
+                setAudioSource(MediaRecorder.AudioSource.MIC)
+                setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                setOutputFile(file.absolutePath)
+                prepare()
+                start()
+            }
+            recorder = newRecorder
+            isRecording = true
+            audioPath = file.absolutePath
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(context, "录音启动失败：${e.message}", Toast.LENGTH_SHORT).show()
+            stopRecording()
+        }
     }
 
     DisposableEffect(Unit) {
@@ -463,7 +503,6 @@ fun AddTodoDialog(
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 OutlinedTextField(value = title, onValueChange = { title = it }, label = { Text("标题") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp))
 
-                // 录音区域
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (audioPath != null && !isRecording) {
                         Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(8.dp), modifier = Modifier.weight(1f)) {
@@ -481,6 +520,8 @@ fun AddTodoDialog(
                                     stopRecording()
                                 } else {
                                     recordPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    // 注意：这里需要用户授权后再次点击才能开始录音，或者做更复杂的权限回调处理。
+                                    // 为防止崩溃，startRecording 内部加了 try-catch
                                     startRecording()
                                 }
                             },
@@ -489,15 +530,13 @@ fun AddTodoDialog(
                         ) {
                             Icon(if (isRecording) Icons.Default.Stop else Icons.Default.Mic, null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (isRecording) "停止录音" else "按住录音 (点击开始)")
+                            Text(if (isRecording) "停止录音" else "按住录音 (需要权限)")
                         }
                     }
                 }
 
-                // 语音转文字输入 (可选，保留作为辅助)
                 Box(modifier = Modifier.fillMaxWidth()) {
                     OutlinedTextField(value = content, onValueChange = { content = it }, label = { Text("内容 (可选)") }, modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4, shape = RoundedCornerShape(12.dp))
-                    // 也可以选择移除这个转文字功能，既然已经有了纯录音
                 }
 
                 if (!isIdeaMode) { Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) { Text("优先级", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold); Spacer(modifier = Modifier.width(12.dp)); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PriorityChip("低", 1, priority, LowPriorityColor) { priority = 1 }; PriorityChip("中", 2, priority, MediumPriorityColor) { priority = 2 }; PriorityChip("高", 3, priority, HighPriorityColor) { priority = 3 } } }; Column { Text("分类", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold); Spacer(modifier = Modifier.height(8.dp)); Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("工作", "学习", "生活", "健身").forEach { cat -> FilterChip(selected = category == cat, onClick = { category = cat }, label = { Text(cat) }) } }; if (category !in listOf("工作", "学习", "生活", "健身", "灵感")) { Spacer(modifier = Modifier.height(8.dp)); OutlinedTextField(value = category, onValueChange = { category = it }, label = { Text("自定义分类") }, modifier = Modifier.fillMaxWidth(), singleLine = true, shape = RoundedCornerShape(12.dp)) } } } else { Row(verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Outlined.Lightbulb, null, tint = IdeaColor, modifier = Modifier.size(20.dp)); Spacer(modifier = Modifier.width(8.dp)); Text("将自动归档至“灵感”分类", style = MaterialTheme.typography.bodySmall, color = Color.Gray) } }

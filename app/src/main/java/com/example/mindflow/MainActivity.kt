@@ -9,6 +9,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
@@ -75,7 +76,6 @@ class MainActivity : ComponentActivity() {
                     if (showSplash) {
                         SplashScreen(onTimeout = { showSplash = false })
                     } else {
-                        // ★★★ 核心修改：检查是否首次启动 ★★★
                         if (state.isFirstLaunch) {
                             OnboardingScreen(onFinish = { viewModel.onEvent(TodoEvent.CompleteOnboarding) })
                         } else {
@@ -116,6 +116,7 @@ fun MainScreen(viewModel: TodoViewModel) {
     val context = LocalContext.current
 
     var sessionTodoId by remember { mutableStateOf<Int?>(null) }
+    // 确保 activeSessionTodo 能够实时获取最新的 todo 状态（包括刚添加的图片）
     val activeSessionTodo = remember(sessionTodoId, state.todos) { state.todos.find { it.id == sessionTodoId } }
 
     var fullScreenImageUri by remember { mutableStateOf<String?>(null) }
@@ -123,6 +124,7 @@ fun MainScreen(viewModel: TodoViewModel) {
 
     val currentToast = remember { mutableStateOf<Toast?>(null) }
 
+    // 备份导出 Launcher
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) {
             try {
@@ -156,10 +158,51 @@ fun MainScreen(viewModel: TodoViewModel) {
         return FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
     }
 
+    // ★★★ 1. 修复：添加 galleryLauncher 定义 ★★★
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null && activeSessionTodo != null) {
+            scope.launch {
+                // 使用 ImageUtils 压缩并保存图片到私有目录
+                val savedPath = ImageUtils.compressAndSaveImage(context, uri)
+                if (savedPath != null) {
+                    viewModel.onEvent(TodoEvent.UpdateTodoImage(activeSessionTodo!!, savedPath))
+                    Toast.makeText(context, "图片已添加 🖼️", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "图片处理失败", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // ★★★ 2. 修复：相机拍照后也进行压缩 ★★★
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
         if (success && activeSessionTodo != null && tempImageUri != null) {
-            viewModel.onEvent(TodoEvent.UpdateTodoImage(activeSessionTodo!!, tempImageUri.toString()))
-            Toast.makeText(context, "照片已保存 📸", Toast.LENGTH_SHORT).show()
+            scope.launch {
+                // 1. 尝试压缩拍摄的图片
+                val compressedPath = ImageUtils.compressAndSaveImage(context, tempImageUri!!)
+
+                if (compressedPath != null) {
+                    // 2. 如果压缩成功，删除原始的大图以节省空间
+                    try {
+                        val pathSegments = tempImageUri!!.pathSegments
+                        val filename = pathSegments.last()
+                        val originalFile = File(File(context.filesDir, "images"), filename)
+                        if (originalFile.exists()) {
+                            originalFile.delete()
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // 3. 保存压缩后的图片路径
+                    viewModel.onEvent(TodoEvent.UpdateTodoImage(activeSessionTodo!!, compressedPath))
+                    Toast.makeText(context, "照片已保存 (已压缩) 📸", Toast.LENGTH_SHORT).show()
+                } else {
+                    // 4. 如果压缩失败，则回退使用原始图片
+                    viewModel.onEvent(TodoEvent.UpdateTodoImage(activeSessionTodo!!, tempImageUri.toString()))
+                    Toast.makeText(context, "照片已保存 📸", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
@@ -234,10 +277,15 @@ fun MainScreen(viewModel: TodoViewModel) {
         }
 
         if (activeSessionTodo != null) {
+            // ★★★ 3. 使用 PhotoSessionDialog 并传入 galleryLauncher ★★★
             PhotoSessionDialog(
                 todo = activeSessionTodo!!,
                 onDismiss = { sessionTodoId = null },
                 onAddPhoto = { tempImageUri = createImageUri(); cameraLauncher.launch(tempImageUri!!) },
+                onGalleryClick = {
+                    // 启动系统照片选择器 (仅显示图片)
+                    galleryLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                },
                 onDeletePhoto = { uri -> viewModel.onEvent(TodoEvent.DeleteTodoImage(activeSessionTodo!!, uri)); Toast.makeText(context, "照片已删除", Toast.LENGTH_SHORT).show() },
                 onImageClick = { uri -> fullScreenImageUri = uri }
             )
